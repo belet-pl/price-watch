@@ -16,6 +16,13 @@ websearch:
     - "facebook.com"
     - "youtube.com"
 
+  url_whitelist_patterns:
+    - "^https?://[^/]+/pl(/|$)"
+    - "^https?://www.apple.com/pl/.*"
+  
+  url_blacklist_patterns:
+    - "^https?://[^/]+/(en|de|cz)(/|$)"
+
 # Filtrowanie dostępności (globalnie)
 require_in_stock: true
 availability_keywords:
