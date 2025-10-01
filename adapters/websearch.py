@@ -16,19 +16,17 @@ def _domain(url: str) -> str:
     try:
         host = urlparse(url).hostname or ""
         parts = host.split(".")
+        # "domena.tld" lub "sub.domena.tld" -> skróć do podstawy
         return ".".join(parts[-3:]) if len(parts) >= 3 and len(parts[-1]) <= 3 else ".".join(parts[-2:])
     except Exception:
         return ""
 
 def _extract_price(text: str, rates: dict | None = None):
     """
-    Zwraca *najniższą* cenę w PLN wyciągniętą z HTML (po konwersji walut).
+    Zwraca najniższą cenę w PLN wyciągniętą z HTML (po konwersji walut).
     rates pochodzi z config.yaml -> currency: {...}
-    Oczekiwane klucze:
-      - parse_eur: bool
-      - parse_czk: bool
-      - eur_to_pln: float
-      - czk_to_pln: float
+      - parse_eur: bool, parse_czk: bool
+      - eur_to_pln: float, czk_to_pln: float
     """
     rates = rates or {}
     eur_to_pln = float(rates.get("eur_to_pln")) if rates.get("parse_eur") and rates.get("eur_to_pln") else None
@@ -54,7 +52,7 @@ def _extract_price(text: str, rates: dict | None = None):
                 val = val * czk_to_pln
             else:
                 continue  # brak kursu CZK -> pomijamy
-        # zł / pln -> bez zmian
+        # zł/pln -> bez zmian
 
         candidates.append(val)
 
@@ -63,12 +61,13 @@ def _extract_price(text: str, rates: dict | None = None):
 def search(term: str, timeout: int = 10, ctx: dict | None = None):
     """
     Wyszukiwanie przez Google CSE.
-    Wymaga env: GOOGLE_CSE_KEY, GOOGLE_CSE_CX
-    ctx zawiera m.in.:
-      - websearch: { region, max_results, site_whitelist, site_blacklist }
+    Env: GOOGLE_CSE_KEY, GOOGLE_CSE_CX
+    ctx:
+      - websearch: { region, max_results, site_whitelist, site_blacklist,
+                     url_whitelist_patterns, url_blacklist_patterns }
       - availability_keywords: { out_of_stock:[...] }
       - require_in_stock: bool
-      - pattern: regex do filtrowania tytułów
+      - pattern: regex tytułu
       - currency: { parse_eur, parse_czk, eur_to_pln, czk_to_pln }
     """
     key = os.getenv("GOOGLE_CSE_KEY")
@@ -76,17 +75,17 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
     if not key or not cx:
         return []
 
-    ws = (ctx or {}).get("websearch", {})
+    ws = (ctx or {}).get("websearch", {}) or {}
     region = ws.get("region", "pl-PL")
     max_results = int(ws.get("max_results", 10))
     whitelist = set((ws.get("site_whitelist") or []))
     blacklist = set((ws.get("site_blacklist") or []))
+    url_wl_patterns = [re.compile(p) for p in (ws.get("url_whitelist_patterns") or [])]
+    url_bl_patterns = [re.compile(p) for p in (ws.get("url_blacklist_patterns") or [])]
 
     out_words = [w.lower() for w in (ctx or {}).get("availability_keywords", {}).get("out_of_stock", [])]
     require_in_stock = bool((ctx or {}).get("require_in_stock", False))
-
-    # kursy/waluty z config.yaml
-    rates = (ctx or {}).get("currency", {})  # << TU POBIERAMY KURSY
+    rates = (ctx or {}).get("currency", {})  # kursy walut
 
     # regex tytułu (opcjonalnie)
     pat = None
@@ -99,16 +98,21 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
 
     items = []
     session = requests.Session()
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "pl-PL,pl;q=0.9"
+    }
 
+    # Parametry CSE – preferuj Polskę
     params = {
         "key": key,
         "cx": cx,
         "q": term,
-        "num": 10,
+        "num": 10,       # per page
         "hl": "pl",
         "gl": "pl",
         "safe": "off",
+        "cr": "countryPL",  # preferuj wyniki z PL (nie twardy filtr)
     }
 
     fetched = 0
@@ -129,17 +133,23 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
                 continue
             dom = _domain(link)
 
-            # whitelist/blacklist domen
+            # Filtr domen (whitelist/blacklist przez endswith)
             if whitelist and all(not dom.endswith(w) for w in whitelist):
                 continue
             if blacklist and any(dom.endswith(b) for b in blacklist):
                 continue
 
-            # regex po tytule (opcjonalnie)
+            # Filtry po ścieżce URL (np. wymagamy /pl/)
+            if url_wl_patterns and not any(p.search(link) for p in url_wl_patterns):
+                continue
+            if url_bl_patterns and any(p.search(link) for p in url_bl_patterns):
+                continue
+
+            # Opcjonalny filtr po tytule wyniku
             if pat and not pat.search(title):
                 continue
 
-            # pobierz stronę, spróbuj wyłuskać cenę i dostępność
+            # Pobierz stronę, wyciągnij cenę i dostępność
             try:
                 pr = session.get(link, headers=headers, timeout=timeout)
                 html_text = pr.text
@@ -151,7 +161,7 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
                 if any(w in low for w in out_words):
                     continue
 
-            price = _extract_price(html_text, rates=rates)  # << TU PRZEKAZUJEMY KURSY
+            price = _extract_price(html_text, rates=rates)
             items.append({
                 "store": "web",
                 "title": html.unescape(title),
@@ -164,9 +174,9 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
                 break
 
         start += 10
-        time.sleep(1.0)
+        time.sleep(1.0)  # delikatny throttle, by nie zalać CSE/stron
 
-    # deduplikacja po URL
+    # Deduplikacja po URL
     uniq = {}
     for o in items:
         uniq[o["url"]] = o
