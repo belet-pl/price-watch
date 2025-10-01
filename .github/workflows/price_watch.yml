@@ -9,15 +9,17 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - run: pip install -r requirements.txt
+      - name: Install deps
+        run: pip install -r requirements.txt
 
-      # Uruchom pojedynczy przebieg z kluczami CSE w env
       - name: Run agent (one-shot)
         env:
           GOOGLE_CSE_KEY: ${{ secrets.GOOGLE_CSE_KEY }}
@@ -25,19 +27,33 @@ jobs:
           RUN_ONCE: "true"
         run: python main.py
 
-      # Załącz offers.db jako artefakt do pobrania (jeśli powstał)
-      - name: Upload offers.db
+      # --- Artefakty: offers.db i found.csv ---
+
+      - name: Ensure offers.db exists
         if: ${{ always() }}
         run: |
-          if [ -f "offers.db" ]; then
-            echo "offers.db found"
-          else
-            echo "offers.db not found, creating empty for inspection"
+          if [ ! -f "offers.db" ]; then
+            echo "offers.db not found, creating empty"
             sqlite3 offers.db 'VACUUM;'
           fi
-        shell: bash
 
-      - uses: actions/upload-artifact@v4
+      - name: Ensure found.csv exists
+        if: ${{ always() }}
+        run: |
+          if [ ! -f "found.csv" ]; then
+            echo "product,store,title,price_pln,url,found_at" > found.csv
+          fi
+
+      - name: Upload offers.db
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
         with:
           name: offers-db
           path: offers.db
+
+      - name: Upload found.csv
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: found-csv
+          path: found.csv
