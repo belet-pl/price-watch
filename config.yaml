@@ -7,7 +7,10 @@ websearch:
   region: "pl-PL"          # wpływa na język/wyniki regionalne
   max_results: 15          # ile linków przetwarzać na produkt
   site_whitelist: []       # opcjonalnie: ["x-kom.pl","euro.com.pl","komputronik.pl"]
-  site_blacklist: []       # opcjonalnie: ["aliexpress.com","olx.pl"]
+  site_blacklist:          # opcjonalnie: ["aliexpress.com","olx.pl"]
+    - "reddit.com"
+    - "facebook.com"
+    - "youtube.com"
 
 # Filtrowanie dostępności (globalnie)
 require_in_stock: true
