@@ -24,12 +24,12 @@ availability_keywords:
 products:
   - name: "Reolink E1 Outdoor SE PoE"   # fraza lub regex
     pattern: '(?i)\bReolink\b.*\bE1\b.*\bOutdoor\b.*\bSE\b.*\bPoE\b'   # Wzorzec regex (dopasuje różne warianty zapisu, bez rozróżniania wielkości liter)
-    max_price_pln: 250.00
+    max_price_pln: 390.00
     stores: ["websearch"]
 
   - name: "Nowodvorski TAY 5293"   # fraza lub regex
     pattern: '(?i)^(?=.*\bnowodvorski\b)(?=.*\btay\b)(?=.*\b5293\b).*'   # Wzorzec regex (dopasuje różne warianty zapisu, bez rozróżniania wielkości liter)
-    max_price_pln: 250.00
+    max_price_pln: 190
     stores: ["websearch"]
 
 
