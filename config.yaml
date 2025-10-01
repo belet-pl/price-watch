@@ -28,6 +28,13 @@ availability_keywords:
     - "preorder"
     - "na zamówienie"
 
+# WALUTY
+currency:
+  parse_eur: true
+  parse_czk: true
+  eur_to_pln: 4.30   # tu wpisz kurs
+  czk_to_pln: 0.18   # tu wpisz kurs (1 CZK ≈ 0.18 PLN)
+
 products:
   - name: "Reolink E1 Outdoor SE PoE"   # fraza lub regex
     pattern: '(?i)\bReolink\b.*\bE1\b.*\bOutdoor\b.*\bSE\b.*\bPoE\b'   # Wzorzec regex (dopasuje różne warianty zapisu, bez rozróżniania wielkości liter)
