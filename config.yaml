@@ -6,7 +6,10 @@ websearch:
   engine: "google_cse"     # "bing" albo "google_cse" (Google Custom Search)
   region: "pl-PL"          # wpływa na język/wyniki regionalne
   max_results: 15          # ile linków przetwarzać na produkt
-  site_whitelist: []       # opcjonalnie: ["x-kom.pl","euro.com.pl","komputronik.pl"]
+  site_whitelist:          # opcjonalnie: ["x-kom.pl","euro.com.pl","komputronik.pl"]
+    - ".pl"
+    - "amazon.de"
+    - "amazon.eu"
   site_blacklist:          # opcjonalnie: ["aliexpress.com","olx.pl"]
     - "reddit.com"
     - "facebook.com"
