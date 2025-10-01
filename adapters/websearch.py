@@ -6,46 +6,74 @@ import html
 import requests
 from urllib.parse import urlparse
 
-PRICE_RE = re.compile(r'(\d{1,5}(?:[ \xa0]?\d{3})*(?:[.,]\d{2})?)\s*(?:zł|pln)\b', re.IGNORECASE)
+# Łapiemy ceny w PLN, EUR i CZK
+PRICE_RE = re.compile(
+    r'(\d{1,5}(?:[ \xa0]?\d{3})*(?:[.,]\d{1,2})?)\s*(zł|pln|€|eur|kč|kc|czk)\b',
+    re.IGNORECASE
+)
 
 def _domain(url: str) -> str:
     try:
         host = urlparse(url).hostname or ""
-        # zrzucamy subdomeny do postaci "domena.tld"
         parts = host.split(".")
         return ".".join(parts[-3:]) if len(parts) >= 3 and len(parts[-1]) <= 3 else ".".join(parts[-2:])
     except Exception:
         return ""
 
-def _extract_price(text: str):
-    # znajdź najniższą cenę wyglądającą na PLN
+def _extract_price(text: str, rates: dict | None = None):
+    """
+    Zwraca *najniższą* cenę w PLN wyciągniętą z HTML (po konwersji walut).
+    rates pochodzi z config.yaml -> currency: {...}
+    Oczekiwane klucze:
+      - parse_eur: bool
+      - parse_czk: bool
+      - eur_to_pln: float
+      - czk_to_pln: float
+    """
+    rates = rates or {}
+    eur_to_pln = float(rates.get("eur_to_pln")) if rates.get("parse_eur") and rates.get("eur_to_pln") else None
+    czk_to_pln = float(rates.get("czk_to_pln")) if rates.get("parse_czk") and rates.get("czk_to_pln") else None
+
     candidates = []
     for m in PRICE_RE.finditer(text):
-        raw = m.group(1).replace("\xa0", " ").replace(" ", "")
-        raw = raw.replace(",", ".")
+        raw_num = m.group(1).replace("\xa0", " ").replace(" ", "").replace(",", ".")
+        unit = (m.group(2) or "").lower()
         try:
-            val = float(raw)
-            candidates.append(val)
+            val = float(raw_num)
         except Exception:
-            pass
+            continue
+
+        # Konwersje walut
+        if unit in ("€", "eur"):
+            if eur_to_pln:
+                val = val * eur_to_pln
+            else:
+                continue  # brak kursu EUR -> pomijamy
+        elif unit in ("kč", "kc", "czk"):
+            if czk_to_pln:
+                val = val * czk_to_pln
+            else:
+                continue  # brak kursu CZK -> pomijamy
+        # zł / pln -> bez zmian
+
+        candidates.append(val)
+
     return min(candidates) if candidates else None
 
 def search(term: str, timeout: int = 10, ctx: dict | None = None):
     """
-    Wyszukiwanie w sieci przez Google CSE.
-    Wymaga zmiennych środowiskowych:
-      - GOOGLE_CSE_KEY  (API key)
-      - GOOGLE_CSE_CX   (Custom Search Engine ID)
-    ctx powinien zawierać:
-      - websearch: {engine, region, max_results, site_whitelist, site_blacklist}
-      - availability_keywords: {in_stock:[], out_of_stock:[...]}
+    Wyszukiwanie przez Google CSE.
+    Wymaga env: GOOGLE_CSE_KEY, GOOGLE_CSE_CX
+    ctx zawiera m.in.:
+      - websearch: { region, max_results, site_whitelist, site_blacklist }
+      - availability_keywords: { out_of_stock:[...] }
       - require_in_stock: bool
-      - pattern: opcjonalny regex string do filtrowania tytułu
+      - pattern: regex do filtrowania tytułów
+      - currency: { parse_eur, parse_czk, eur_to_pln, czk_to_pln }
     """
     key = os.getenv("GOOGLE_CSE_KEY")
     cx  = os.getenv("GOOGLE_CSE_CX")
     if not key or not cx:
-        # Bez kluczy zwracamy pustą listę, żeby nie psuć cyklu
         return []
 
     ws = (ctx or {}).get("websearch", {})
@@ -57,7 +85,10 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
     out_words = [w.lower() for w in (ctx or {}).get("availability_keywords", {}).get("out_of_stock", [])]
     require_in_stock = bool((ctx or {}).get("require_in_stock", False))
 
-    # Kompilujemy regex (jeśli podany) do filtrowania tytułów
+    # kursy/waluty z config.yaml
+    rates = (ctx or {}).get("currency", {})  # << TU POBIERAMY KURSY
+
+    # regex tytułu (opcjonalnie)
     pat = None
     pat_str = (ctx or {}).get("pattern")
     if pat_str:
@@ -70,14 +101,11 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
     session = requests.Session()
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    # Google CSE – endpoint
-    # Doc: https://developers.google.com/custom-search/v1/reference/rest/v1/cse/list
-    # Parametry regionalne: hl, gl (tu użyjemy hl=pl, gl=pl dla PL)
     params = {
         "key": key,
         "cx": cx,
         "q": term,
-        "num": 10,  # per page
+        "num": 10,
         "hl": "pl",
         "gl": "pl",
         "safe": "off",
@@ -107,26 +135,23 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
             if blacklist and any(dom.endswith(b) for b in blacklist):
                 continue
 
-            # opcjonalne filtrowanie regexem po tytule wyniku
+            # regex po tytule (opcjonalnie)
             if pat and not pat.search(title):
-                # jeśli sam tytuł nie pasuje, i tak spróbujemy stronę – ale żeby ograniczyć koszty
-                # możesz zakomentować tę linię, by zawsze sprawdzać stronę:
                 continue
 
-            # pobierz stronę, by spróbować wyłuskać cenę i dostępność
+            # pobierz stronę, spróbuj wyłuskać cenę i dostępność
             try:
                 pr = session.get(link, headers=headers, timeout=timeout)
                 html_text = pr.text
             except Exception:
                 continue
 
-            # szybkie sprawdzenie dostępności
             if require_in_stock and out_words:
                 low = html_text.lower()
                 if any(w in low for w in out_words):
                     continue
 
-            price = _extract_price(html_text)
+            price = _extract_price(html_text, rates=rates)  # << TU PRZEKAZUJEMY KURSY
             items.append({
                 "store": "web",
                 "title": html.unescape(title),
@@ -138,10 +163,7 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
             if fetched >= max_results:
                 break
 
-        # Stronicowanie CSE – zwiększamy start o 10
         start += 10
-
-        # delikatny throttle
         time.sleep(1.0)
 
     # deduplikacja po URL
