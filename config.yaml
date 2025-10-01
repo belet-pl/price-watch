@@ -1,0 +1,27 @@
+# Konfiguracja agenta
+frequency_minutes: 60  # jak często sprawdzać (domyślnie co 60 min)
+
+products:
+  - name: "Reolink E1 Outdoor SE PoE"   # fraza lub regex
+    max_price_pln: 250.00
+    stores: ["xkom", "rtv_euro_agd"]
+
+notifications:
+  email:
+    enabled: false
+    smtp_host: "smtp.example.com"
+    smtp_port: 587
+    use_tls: true
+    username: "user@example.com"
+    password: "APP_PASSWORD"
+    from_addr: "Price Watch <user@example.com>"
+    to_addrs: ["user@example.com"]
+  telegram:
+    enabled: false
+    bot_token: "123456:ABC-DEF..."  # utwórz bota @BotFather
+    chat_id: "123456789"
+
+# Ograniczenia grzecznościowe (rate limit itp.)
+politeness:
+  per_store_delay_seconds: 5
+  request_timeout_seconds: 10
