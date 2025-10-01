@@ -6,25 +6,26 @@ import html
 import requests
 from urllib.parse import urlparse
 
-# Łapiemy ceny w PLN, EUR i CZK
+# Ceny w PLN / EUR / CZK
 PRICE_RE = re.compile(
     r'(\d{1,5}(?:[ \xa0]?\d{3})*(?:[.,]\d{1,2})?)\s*(zł|pln|€|eur|kč|kc|czk)\b',
     re.IGNORECASE
 )
 
 def _domain(url: str) -> str:
+    """Zwróć domenę bazową (np. x-kom.pl, reolink.com)."""
     try:
         host = urlparse(url).hostname or ""
         parts = host.split(".")
-        # "domena.tld" lub "sub.domena.tld" -> skróć do podstawy
+        # dla TLD 2-3 znakowych weź 2 ostatnie segmenty, w innym przypadku 3
         return ".".join(parts[-3:]) if len(parts) >= 3 and len(parts[-1]) <= 3 else ".".join(parts[-2:])
     except Exception:
         return ""
 
 def _extract_price(text: str, rates: dict | None = None):
     """
-    Zwraca najniższą cenę w PLN wyciągniętą z HTML (po konwersji walut).
-    rates pochodzi z config.yaml -> currency: {...}
+    Zwraca *najniższą* cenę w PLN wyciągniętą z HTML (po konwersji walut).
+    rates (config.yaml -> currency):
       - parse_eur: bool, parse_czk: bool
       - eur_to_pln: float, czk_to_pln: float
     """
@@ -44,12 +45,12 @@ def _extract_price(text: str, rates: dict | None = None):
         # Konwersje walut
         if unit in ("€", "eur"):
             if eur_to_pln:
-                val = val * eur_to_pln
+                val *= eur_to_pln
             else:
                 continue  # brak kursu EUR -> pomijamy
         elif unit in ("kč", "kc", "czk"):
             if czk_to_pln:
-                val = val * czk_to_pln
+                val *= czk_to_pln
             else:
                 continue  # brak kursu CZK -> pomijamy
         # zł/pln -> bez zmian
@@ -63,11 +64,13 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
     Wyszukiwanie przez Google CSE.
     Env: GOOGLE_CSE_KEY, GOOGLE_CSE_CX
     ctx:
-      - websearch: { region, max_results, site_whitelist, site_blacklist,
-                     url_whitelist_patterns, url_blacklist_patterns }
+      - websearch: {
+          region, max_results, site_whitelist, site_blacklist,
+          url_whitelist_patterns, url_blacklist_patterns
+        }
       - availability_keywords: { out_of_stock:[...] }
       - require_in_stock: bool
-      - pattern: regex tytułu
+      - pattern: regex tytułu/HTML
       - currency: { parse_eur, parse_czk, eur_to_pln, czk_to_pln }
     """
     key = os.getenv("GOOGLE_CSE_KEY")
@@ -76,7 +79,6 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
         return []
 
     ws = (ctx or {}).get("websearch", {}) or {}
-    region = ws.get("region", "pl-PL")
     max_results = int(ws.get("max_results", 10))
     whitelist = set((ws.get("site_whitelist") or []))
     blacklist = set((ws.get("site_blacklist") or []))
@@ -87,7 +89,7 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
     require_in_stock = bool((ctx or {}).get("require_in_stock", False))
     rates = (ctx or {}).get("currency", {})  # kursy walut
 
-    # regex tytułu (opcjonalnie)
+    # opcjonalny regex produktu
     pat = None
     pat_str = (ctx or {}).get("pattern")
     if pat_str:
@@ -100,19 +102,19 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
     session = requests.Session()
     headers = {
         "User-Agent": "Mozilla/5.0",
-        "Accept-Language": "pl-PL,pl;q=0.9"
+        "Accept-Language": "pl-PL,pl;q=0.9",
     }
 
-    # Parametry CSE – preferuj Polskę
+    # Preferuj Polskę (nie jest to twardy filtr, ale pomaga)
     params = {
         "key": key,
         "cx": cx,
         "q": term,
-        "num": 10,       # per page
+        "num": 10,       # per page (CSE limit)
         "hl": "pl",
         "gl": "pl",
         "safe": "off",
-        "cr": "countryPL",  # preferuj wyniki z PL (nie twardy filtr)
+        "cr": "countryPL",
     }
 
     fetched = 0
@@ -131,37 +133,43 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
             title = it.get("title") or ""
             if not link:
                 continue
+
             dom = _domain(link)
 
-            # Filtr domen (whitelist/blacklist przez endswith)
+            # 1) Filtr domen (whitelist/blacklist przez endswith)
             if whitelist and all(not dom.endswith(w) for w in whitelist):
                 continue
             if blacklist and any(dom.endswith(b) for b in blacklist):
                 continue
 
-            # Filtry po ścieżce URL (np. wymagamy /pl/)
+            # 2) Filtry po ścieżce URL (np. wymagamy /pl/)
             if url_wl_patterns and not any(p.search(link) for p in url_wl_patterns):
                 continue
             if url_bl_patterns and any(p.search(link) for p in url_bl_patterns):
                 continue
 
-            # Opcjonalny filtr po tytule wyniku
-            if pat and not pat.search(title):
-                continue
-
-            # Pobierz stronę, wyciągnij cenę i dostępność
+            # 3) Pobierz stronę (pattern sprawdzimy też na HTML)
             try:
                 pr = session.get(link, headers=headers, timeout=timeout)
                 html_text = pr.text
             except Exception:
                 continue
 
+            # 4) Pattern: najpierw tytuł, jeśli nie pasuje—spróbuj na treści
+            if pat:
+                if not pat.search(title):
+                    if not pat.search(html_text):
+                        continue
+
+            # 5) Filtrowanie dostępności
             if require_in_stock and out_words:
                 low = html_text.lower()
                 if any(w in low for w in out_words):
                     continue
 
+            # 6) Cena (po konwersji walut)
             price = _extract_price(html_text, rates=rates)
+
             items.append({
                 "store": "web",
                 "title": html.unescape(title),
@@ -174,7 +182,7 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
                 break
 
         start += 10
-        time.sleep(1.0)  # delikatny throttle, by nie zalać CSE/stron
+        time.sleep(1.0)  # throttle
 
     # Deduplikacja po URL
     uniq = {}
