@@ -1,0 +1,43 @@
+name: Price Watch (daily)
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # codziennie 06:00 UTC (~07:00/08:00 w PL)
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      # Uruchom pojedynczy przebieg z kluczami CSE w env
+      - name: Run agent (one-shot)
+        env:
+          GOOGLE_CSE_KEY: ${{ secrets.GOOGLE_CSE_KEY }}
+          GOOGLE_CSE_CX:  ${{ secrets.GOOGLE_CSE_CX }}
+          RUN_ONCE: "true"
+        run: python main.py
+
+      # Załącz offers.db jako artefakt do pobrania (jeśli powstał)
+      - name: Upload offers.db
+        if: ${{ always() }}
+        run: |
+          if [ -f "offers.db" ]; then
+            echo "offers.db found"
+          else
+            echo "offers.db not found, creating empty for inspection"
+            sqlite3 offers.db 'VACUUM;'
+          fi
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: offers-db
+          path: offers.db
