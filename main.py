@@ -1,4 +1,5 @@
 import os
+import csv
 import sqlite3
 import time
 import re
@@ -15,6 +16,7 @@ logging.basicConfig(
 
 BASE = Path(__file__).parent
 DB_PATH = BASE / "offers.db"
+CSV_PATH = BASE / "found.csv"
 
 def ensure_db():
     con = sqlite3.connect(DB_PATH)
@@ -56,17 +58,11 @@ def run_once(cfg):
         "require_in_stock": bool(cfg.get("require_in_stock", False)),
     }
 
-    # powiadomienia (u Ciebie wyłączone, ale zostawiamy obsługę)
-    email_cfg = cfg.get("notifications", {}).get("email", {})
-    tel_cfg = cfg.get("notifications", {}).get("telegram", {})
-    email_notifier = None
-    tg_notifier = None
-    if email_cfg.get("enabled"):
-        from notifications.email_notifier import EmailNotifier
-        email_notifier = EmailNotifier(email_cfg)
-    if tel_cfg.get("enabled"):
-        from notifications.telegram_notifier import TelegramNotifier
-        tg_notifier = TelegramNotifier(tel_cfg)
+    # nagłówek CSV jeśli plik jeszcze nie istnieje
+    if not CSV_PATH.exists():
+        with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["product", "store", "title", "price_pln", "url", "found_at"])
 
     for p in products:
         name = p["name"]
@@ -140,20 +136,41 @@ def run_once(cfg):
                 max_price
             )
 
-            # notyfikacje (opcjonalne; u Ciebie wyłączone)
+            # TOP 3 najtańsze zawsze w logu
+            if priced:
+                priced_sorted = sorted(
+                    ((normalize_price(o["price_pln"]), o.get("title"), o.get("url")) for o in priced),
+                    key=lambda t: t[0]
+                )
+                top = priced_sorted[:3]
+                logging.info("TOP najtańsze oferty z ceną:")
+                for i, (prc, title, url) in enumerate(top, start=1):
+                    logging.info("  #%d  %.2f PLN — %s — %s", i, prc, title, url)
+
+            # dopisz rekordy z ceną do CSV (łatwe pobranie jako artefakt)
+            if priced:
+                with open(CSV_PATH, "a", newline="", encoding="utf-8") as f:
+                    w = csv.writer(f)
+                    for o in priced:
+                        w.writerow([
+                            name,
+                            o.get("store"),
+                            o.get("title"),
+                            normalize_price(o.get("price_pln")),
+                            o.get("url"),
+                            datetime.now(timezone.utc).isoformat()
+                        ])
+
+            # notyfikacje (opcjonalne; możesz włączyć w configu)
             good = [
-                o for o in offers
-                if normalize_price(o.get("price_pln")) is not None
-                and normalize_price(o.get("price_pln")) <= max_price
+                o for o in priced
+                if normalize_price(o.get("price_pln")) <= max_price
             ]
             if good:
                 lines = [f"✅ {g['store']}: {g['title']} — {g['price_pln']} PLN\n{g['url']}" for g in good]
                 message = f"Znaleziono ofertę ≤ {max_price} PLN dla: {name}\n\n" + "\n\n".join(lines)
                 logging.info(message)
-                if email_notifier:
-                    email_notifier.send("Price Watch: znaleziono okazję", message)
-                if tg_notifier:
-                    tg_notifier.send(message)
+                # powiadomienia są wyłączone w Twoim configu; zostawiamy tylko log
 
             time.sleep(delay)
 
