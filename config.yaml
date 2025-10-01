@@ -1,10 +1,37 @@
 # Konfiguracja agenta
 frequency_minutes: 60  # jak często sprawdzać (domyślnie co 60 min)
 
+# USTAWIENIA WEBSEARCH
+websearch:
+  engine: "google_cse"     # "bing" albo "google_cse" (Google Custom Search)
+  region: "pl-PL"          # wpływa na język/wyniki regionalne
+  max_results: 15          # ile linków przetwarzać na produkt
+  site_whitelist: []       # opcjonalnie: ["x-kom.pl","euro.com.pl","komputronik.pl"]
+  site_blacklist: []       # opcjonalnie: ["aliexpress.com","olx.pl"]
+
+# Filtrowanie dostępności (globalnie)
+require_in_stock: true
+availability_keywords:
+  in_stock: []  # na razie puste; filtr działa wyłącznie przez "out_of_stock"
+  out_of_stock:
+    - "brak"
+    - "niedostępny"
+    - "chwilowo niedostępny"
+    - "out of stock"
+    - "preorder"
+    - "na zamówienie"
+
 products:
   - name: "Reolink E1 Outdoor SE PoE"   # fraza lub regex
+    pattern: '(?i)\bReolink\b.*\bE1\b.*\bOutdoor\b.*\bSE\b.*\bPoE\b'   # Wzorzec regex (dopasuje różne warianty zapisu, bez rozróżniania wielkości liter)
     max_price_pln: 250.00
-    stores: ["xkom", "rtv_euro_agd"]
+    stores: ["websearch"]
+
+  - name: "Nowodvorski TAY 5293"   # fraza lub regex
+    pattern: '(?i)^(?=.*\bnowodvorski\b)(?=.*\btay\b)(?=.*\b5293\b).*'   # Wzorzec regex (dopasuje różne warianty zapisu, bez rozróżniania wielkości liter)
+    max_price_pln: 250.00
+    stores: ["websearch"]
+
 
 notifications:
   email:
@@ -23,5 +50,5 @@ notifications:
 
 # Ograniczenia grzecznościowe (rate limit itp.)
 politeness:
-  per_store_delay_seconds: 5
+  per_store_delay_seconds: 10
   request_timeout_seconds: 10
