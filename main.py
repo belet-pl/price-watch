@@ -8,8 +8,8 @@ from pathlib import Path
 from importlib import import_module
 from datetime import datetime, timezone
 
-from notifications.email_notifier import EmailNotifier
-from notifications.telegram_notifier import TelegramNotifier
+# from notifications.email_notifier import EmailNotifier
+# from notifications.telegram_notifier import TelegramNotifier
 
 logging.basicConfig(
     level=logging.INFO,
