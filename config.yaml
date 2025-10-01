@@ -5,7 +5,7 @@ frequency_minutes: 60  # jak często sprawdzać (domyślnie co 60 min)
 websearch:
   engine: "google_cse"     # "bing" albo "google_cse" (Google Custom Search)
   region: "pl-PL"          # wpływa na język/wyniki regionalne
-  max_results: 15          # ile linków przetwarzać na produkt
+  max_results: 50          # ile linków przetwarzać na produkt
   site_whitelist:          # opcjonalnie: ["x-kom.pl","euro.com.pl","komputronik.pl"]
     - ".pl"
     - ".cz"
