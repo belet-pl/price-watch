@@ -8,6 +8,7 @@ websearch:
   max_results: 15          # ile linków przetwarzać na produkt
   site_whitelist:          # opcjonalnie: ["x-kom.pl","euro.com.pl","komputronik.pl"]
     - ".pl"
+    - ".cz"
     - "amazon.de"
     - "amazon.eu"
   site_blacklist:          # opcjonalnie: ["aliexpress.com","olx.pl"]
