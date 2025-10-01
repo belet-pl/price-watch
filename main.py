@@ -64,8 +64,15 @@ def run_once(cfg):
     email_cfg = cfg.get("notifications", {}).get("email", {})
     tel_cfg = cfg.get("notifications", {}).get("telegram", {})
 
-    email_notifier = EmailNotifier(email_cfg) if email_cfg.get("enabled") else None
-    tg_notifier = TelegramNotifier(tel_cfg) if tel_cfg.get("enabled") else None
+    email_notifier = None
+    tg_notifier = None
+    if email_cfg.get("enabled"):
+        from notifications.email_notifier import EmailNotifier
+        email_notifier = EmailNotifier(email_cfg)
+    if tel_cfg.get("enabled"):
+        from notifications.telegram_notifier import TelegramNotifier
+        tg_notifier = TelegramNotifier(tel_cfg)
+
 
     for p in products:
         name = p["name"]
