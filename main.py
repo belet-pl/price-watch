@@ -8,9 +8,6 @@ from pathlib import Path
 from importlib import import_module
 from datetime import datetime, timezone
 
-# from notifications.email_notifier import EmailNotifier
-# from notifications.telegram_notifier import TelegramNotifier
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
@@ -43,7 +40,6 @@ def load_config():
 def normalize_price(p):
     if p is None:
         return None
-    # zamień przecinki itp. i wyciągnij liczby
     s = str(p).replace("\xa0", " ").replace(",", ".")
     m = re.search(r"(\d+(?:\.\d{1,2})?)", s)
     return float(m.group(1)) if m else None
@@ -60,10 +56,9 @@ def run_once(cfg):
         "require_in_stock": bool(cfg.get("require_in_stock", False)),
     }
 
-    # powiadomienia (na razie wyłączone w Twoim configu)
+    # powiadomienia (u Ciebie wyłączone, ale zostawiamy obsługę)
     email_cfg = cfg.get("notifications", {}).get("email", {})
     tel_cfg = cfg.get("notifications", {}).get("telegram", {})
-
     email_notifier = None
     tg_notifier = None
     if email_cfg.get("enabled"):
@@ -72,7 +67,6 @@ def run_once(cfg):
     if tel_cfg.get("enabled"):
         from notifications.telegram_notifier import TelegramNotifier
         tg_notifier = TelegramNotifier(tel_cfg)
-
 
     for p in products:
         name = p["name"]
@@ -95,15 +89,31 @@ def run_once(cfg):
                 if pattern:
                     ctx["pattern"] = pattern
                 # NOWY podpis: adapter może (ale nie musi) przyjąć ctx=
-                offers = mod.search(name, timeout=cfg.get("politeness", {}).get("request_timeout_seconds", 10), ctx=ctx)
+                offers = mod.search(
+                    name,
+                    timeout=cfg.get("politeness", {}).get("request_timeout_seconds", 10),
+                    ctx=ctx
+                )
             except TypeError:
                 # starsze adaptery bez ctx – fallback
-                offers = mod.search(name, timeout=cfg.get("politeness", {}).get("request_timeout_seconds", 10))
+                offers = mod.search(
+                    name,
+                    timeout=cfg.get("politeness", {}).get("request_timeout_seconds", 10)
+                )
             except Exception as e:
                 logging.exception(f"Błąd pobierania z {store}: {e}")
                 offers = []
 
-            # zapis do DB i prog cenowy
+            # PODGLĄD: pierwsze 5 surowych wyników z adaptera
+            if offers:
+                logging.info("Podgląd pierwszych wyników (%s):", min(5, len(offers)))
+                for i, o in enumerate(offers[:5], start=1):
+                    logging.info("  [%d] %s — raw_price=%r — %s",
+                                 i, o.get("title"), o.get("price_pln"), o.get("url"))
+            else:
+                logging.info("Brak wyników z adaptera %s dla zapytania: %r", store, name)
+
+            # zapis do DB (tylko po zparsowaniu liczby)
             con = sqlite3.connect(DB_PATH)
             cur = con.cursor()
             for o in offers:
@@ -112,14 +122,30 @@ def run_once(cfg):
                     continue
                 row = (o.get("store"), o.get("title"), o.get("url"), price, datetime.now(timezone.utc).isoformat())
                 try:
-                    cur.execute("INSERT OR IGNORE INTO offers(store,title,url,price_pln,found_at) VALUES (?,?,?,?,?)", row)
+                    cur.execute(
+                        "INSERT OR IGNORE INTO offers(store,title,url,price_pln,found_at) VALUES (?,?,?,?,?)",
+                        row
+                    )
                 except Exception as e:
                     logging.debug(f"Insert ignore failed: {e}")
             con.commit()
             con.close()
 
-            # notyfikacje (u Ciebie wyłączone, ale zostawiamy logi)
-            good = [o for o in offers if normalize_price(o.get("price_pln")) is not None and normalize_price(o.get("price_pln")) <= max_price]
+            # STATYSTYKI
+            priced = [o for o in offers if normalize_price(o.get("price_pln")) is not None]
+            logging.info(
+                "Statystyki: %d wyników ogółem, %d z ceną, %d ≤ %.2f PLN",
+                len(offers), len(priced),
+                sum(1 for o in priced if normalize_price(o.get("price_pln")) <= max_price),
+                max_price
+            )
+
+            # notyfikacje (opcjonalne; u Ciebie wyłączone)
+            good = [
+                o for o in offers
+                if normalize_price(o.get("price_pln")) is not None
+                and normalize_price(o.get("price_pln")) <= max_price
+            ]
             if good:
                 lines = [f"✅ {g['store']}: {g['title']} — {g['price_pln']} PLN\n{g['url']}" for g in good]
                 message = f"Znaleziono ofertę ≤ {max_price} PLN dla: {name}\n\n" + "\n\n".join(lines)
@@ -148,4 +174,3 @@ if __name__ == "__main__":
             sched.start()
         except (KeyboardInterrupt, SystemExit):
             logging.info("Zatrzymano.")
-
