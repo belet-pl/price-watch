@@ -36,6 +36,16 @@ availability_keywords:
     - "preorder"
     - "na zamówienie"
 
+# RENDEROWANIE JS (fallback tylko gdy statycznie nie znajdziemy ceny)
+rendering:
+  enable_js: true            # włącz/wyłącz Playwright
+  max_js_pages_per_run: 3    # twardy limit na jeden przebieg
+  nav_timeout_ms: 12000      # timeout na załadowanie
+  wait_until: "networkidle"  # "load" | "domcontentloaded" | "networkidle"
+  js_domains_whitelist: []   # [] = pozwól wszystkim; albo np. ["reolink.com",".pl"]
+
+
+
 # WALUTY
 currency:
   parse_eur: true
