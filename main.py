@@ -56,6 +56,9 @@ def run_once(cfg):
         "websearch": cfg.get("websearch", {}),
         "availability_keywords": cfg.get("availability_keywords", {"in_stock": [], "out_of_stock": []}),
         "require_in_stock": bool(cfg.get("require_in_stock", False)),
+        "currency": cfg.get("currency", {}),
+        "rendering": cfg.get("rendering", {}),    # jeśli fallback JS
+        "debug": cfg.get("debug", {}),            # <-- DODAĆ
     }
 
     # nagłówek CSV jeśli plik jeszcze nie istnieje
