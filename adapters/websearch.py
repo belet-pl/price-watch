@@ -1,77 +1,161 @@
 # adapters/websearch.py
 import os
 import re
+import json
 import time
 import html
 import requests
 from urllib.parse import urlparse
 
-# Ceny w PLN / EUR / CZK
+# ========== Konfiguracja ekstrakcji ceny ==========
+
 PRICE_RE = re.compile(
     r'(\d{1,5}(?:[ \xa0]?\d{3})*(?:[.,]\d{1,2})?)\s*(zł|pln|€|eur|kč|kc|czk)\b',
     re.IGNORECASE
 )
 
 def _domain(url: str) -> str:
-    """Zwróć domenę bazową (np. x-kom.pl, reolink.com)."""
     try:
         host = urlparse(url).hostname or ""
         parts = host.split(".")
-        # dla TLD 2-3 znakowych weź 2 ostatnie segmenty, w innym przypadku 3
         return ".".join(parts[-3:]) if len(parts) >= 3 and len(parts[-1]) <= 3 else ".".join(parts[-2:])
     except Exception:
         return ""
 
-def _extract_price(text: str, rates: dict | None = None):
-    """
-    Zwraca *najniższą* cenę w PLN wyciągniętą z HTML (po konwersji walut).
-    rates (config.yaml -> currency):
-      - parse_eur: bool, parse_czk: bool
-      - eur_to_pln: float, czk_to_pln: float
-    """
-    rates = rates or {}
-    eur_to_pln = float(rates.get("eur_to_pln")) if rates.get("parse_eur") and rates.get("eur_to_pln") else None
-    czk_to_pln = float(rates.get("czk_to_pln")) if rates.get("parse_czk") and rates.get("czk_to_pln") else None
+def _to_float(num_str: str):
+    try:
+        return float(num_str.replace("\xa0", " ").replace(" ", "").replace(",", "."))
+    except Exception:
+        return None
 
+def _convert_to_pln(value: float, unit: str, rates: dict) -> float | None:
+    unit = (unit or "").lower()
+    if unit in ("zł", "pln"):
+        return value
+    if unit in ("€", "eur"):
+        if rates.get("parse_eur") and rates.get("eur_to_pln"):
+            return value * float(rates["eur_to_pln"])
+        return None
+    if unit in ("kč", "kc", "czk"):
+        if rates.get("parse_czk") and rates.get("czk_to_pln"):
+            return value * float(rates["czk_to_pln"])
+        return None
+    return None
+
+# ========== Ekstrakcja ze strukturalnych danych ==========
+def _extract_from_jsonld(text: str, rates: dict) -> float | None:
+    """
+    Szuka <script type="application/ld+json"> i próbuje znaleźć Product/Offer z price/priceCurrency.
+    Zwraca najniższą cenę w PLN (po konwersji) lub None.
+    """
+    prices = []
+    for m in re.finditer(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', text, re.I | re.S):
+        block = m.group(1).strip()
+        if not block:
+            continue
+        try:
+            data = json.loads(block)
+        except Exception:
+            # niektóre sklepy sklejają kilka JSON-ów w jedno <script>; spróbuj po liniach
+            chunks = []
+            for line in block.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    chunks.append(json.loads(line))
+                except Exception:
+                    pass
+            if not chunks:
+                continue
+            data = chunks
+
+        stack = [data]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                t = (node.get("@type") or node.get("type") or "").lower()
+                if "product" in t or "offer" in t or "aggregateoffer" in t:
+                    # pojedyncza oferta
+                    if "offers" in node:
+                        stack.append(node["offers"])
+                    else:
+                        price = node.get("price") or node.get("lowPrice") or node.get("highPrice")
+                        cur   = node.get("priceCurrency") or node.get("pricecurrency")
+                        if price:
+                            val = _to_float(str(price))
+                            if val is not None:
+                                if cur:
+                                    pln = _convert_to_pln(val, str(cur), rates)
+                                else:
+                                    # brak waluty – spróbuj regexem wędkować walutę obok
+                                    pln = val  # traktuj jak PLN
+                                if pln is not None:
+                                    prices.append(pln)
+                # iteruj po kluczach
+                for v in node.values():
+                    if isinstance(v, (dict, list)):
+                        stack.append(v)
+            elif isinstance(node, list):
+                for it in node:
+                    if isinstance(it, (dict, list)):
+                        stack.append(it)
+    return min(prices) if prices else None
+
+# ========== Ekstrakcja "statyczna" regexem ==========
+def _extract_price_regex(text: str, rates: dict) -> float | None:
     candidates = []
     for m in PRICE_RE.finditer(text):
-        raw_num = m.group(1).replace("\xa0", " ").replace(" ", "").replace(",", ".")
-        unit = (m.group(2) or "").lower()
-        try:
-            val = float(raw_num)
-        except Exception:
+        val = _to_float(m.group(1))
+        if val is None:
             continue
-
-        # Konwersje walut
-        if unit in ("€", "eur"):
-            if eur_to_pln:
-                val *= eur_to_pln
-            else:
-                continue  # brak kursu EUR -> pomijamy
-        elif unit in ("kč", "kc", "czk"):
-            if czk_to_pln:
-                val *= czk_to_pln
-            else:
-                continue  # brak kursu CZK -> pomijamy
-        # zł/pln -> bez zmian
-
-        candidates.append(val)
-
+        unit = m.group(2)
+        pln = _convert_to_pln(val, unit, rates)
+        if pln is not None:
+            candidates.append(pln)
     return min(candidates) if candidates else None
 
+# ========== Playwright fallback (render JS) ==========
+_RENDER_COUNT = 0  # prosty licznik na przebieg
+
+def _render_and_get_html(url: str, nav_timeout_ms: int, wait_until: str) -> str | None:
+    """
+    Renderuje stronę w headless Chromium i zwraca HTML po załadowaniu.
+    Wymaga: playwright + zainstalowanego chromium (workflow: playwright install --with-deps chromium).
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return None
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            ctx = browser.new_context(locale="pl-PL", user_agent="Mozilla/5.0")
+            page = ctx.new_page()
+            page.set_default_navigation_timeout(nav_timeout_ms)
+            page.goto(url, wait_until=wait_until)
+            # prosta pauza na tiki JS
+            page.wait_for_timeout(500)
+            content = page.content()
+            browser.close()
+            return content
+    except Exception:
+        return None
+
+# ========== Główne wyszukiwanie ==========
 def search(term: str, timeout: int = 10, ctx: dict | None = None):
     """
     Wyszukiwanie przez Google CSE.
     Env: GOOGLE_CSE_KEY, GOOGLE_CSE_CX
     ctx:
-      - websearch: {
-          region, max_results, site_whitelist, site_blacklist,
-          url_whitelist_patterns, url_blacklist_patterns
-        }
+      - websearch: { region, max_results, site_whitelist, site_blacklist,
+                     url_whitelist_patterns, url_blacklist_patterns }
       - availability_keywords: { out_of_stock:[...] }
       - require_in_stock: bool
-      - pattern: regex tytułu/HTML
+      - pattern: regex tytułu/HTML (dopasowanie PRODUKTU)
       - currency: { parse_eur, parse_czk, eur_to_pln, czk_to_pln }
+      - rendering: { enable_js, max_js_pages_per_run, nav_timeout_ms, wait_until, js_domains_whitelist }
     """
     key = os.getenv("GOOGLE_CSE_KEY")
     cx  = os.getenv("GOOGLE_CSE_CX")
@@ -89,7 +173,14 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
     require_in_stock = bool((ctx or {}).get("require_in_stock", False))
     rates = (ctx or {}).get("currency", {})  # kursy walut
 
-    # opcjonalny regex produktu
+    rend = (ctx or {}).get("rendering", {}) or {}
+    enable_js = bool(rend.get("enable_js", False))
+    max_js = int(rend.get("max_js_pages_per_run", 0))
+    nav_timeout_ms = int(rend.get("nav_timeout_ms", 12000))
+    wait_until = str(rend.get("wait_until", "networkidle"))
+    js_domains_wl = set((rend.get("js_domains_whitelist") or []))
+
+    # regex produktu (sprawdzamy tytuł, a jeśli nie pasuje—treść HTML)
     pat = None
     pat_str = (ctx or {}).get("pattern")
     if pat_str:
@@ -105,12 +196,11 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
         "Accept-Language": "pl-PL,pl;q=0.9",
     }
 
-    # Preferuj Polskę (nie jest to twardy filtr, ale pomaga)
     params = {
         "key": key,
         "cx": cx,
         "q": term,
-        "num": 10,       # per page (CSE limit)
+        "num": 10,     # per page
         "hl": "pl",
         "gl": "pl",
         "safe": "off",
@@ -119,6 +209,8 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
 
     fetched = 0
     start = 1
+    global _RENDER_COUNT
+
     while fetched < max_results:
         params["start"] = start
         r = session.get("https://www.googleapis.com/customsearch/v1", params=params, timeout=timeout)
@@ -133,42 +225,78 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
             title = it.get("title") or ""
             if not link:
                 continue
-
             dom = _domain(link)
 
-            # 1) Filtr domen (whitelist/blacklist przez endswith)
+            # 1) filtr domen
             if whitelist and all(not dom.endswith(w) for w in whitelist):
                 continue
             if blacklist and any(dom.endswith(b) for b in blacklist):
                 continue
-
-            # 2) Filtry po ścieżce URL (np. wymagamy /pl/)
+            # 2) filtr po ścieżce
             if url_wl_patterns and not any(p.search(link) for p in url_wl_patterns):
                 continue
             if url_bl_patterns and any(p.search(link) for p in url_bl_patterns):
                 continue
 
-            # 3) Pobierz stronę (pattern sprawdzimy też na HTML)
+            # 3) pobierz statyczny HTML
             try:
                 pr = session.get(link, headers=headers, timeout=timeout)
                 html_text = pr.text
             except Exception:
                 continue
 
-            # 4) Pattern: najpierw tytuł, jeśli nie pasuje—spróbuj na treści
-            if pat:
-                if not pat.search(title):
+            # 4) pattern na tytule/HTML
+            if pat and not pat.search(title):
+                if not pat.search(html_text):
+                    # pattern nie pasuje – zanim odrzucono, spróbuj po JSON-LD (czasem tam jest pełna nazwa)
                     if not pat.search(html_text):
-                        continue
+                        pass  # nic nie robimy, sprawdzenie JSON-LD i tak będzie poniżej
+                    # nie wychodzimy – damy szansę JSON-LD + JS
 
-            # 5) Filtrowanie dostępności
+            # 5) dostępność
             if require_in_stock and out_words:
                 low = html_text.lower()
                 if any(w in low for w in out_words):
+                    # uwaga: nie odrzucaj na tym etapie jeśli planujesz JS, ale zwykle to wystarczy
                     continue
 
-            # 6) Cena (po konwersji walut)
-            price = _extract_price(html_text, rates=rates)
+            # 6) cena: JSON-LD → regex
+            price = _extract_from_jsonld(html_text, rates) or _extract_price_regex(html_text, rates)
+
+            # 7) jeśli brak ceny, a JS włączony – spróbuj renderu (z limitem)
+            if price is None and enable_js:
+                # jeśli whitelista domen do JS jest ustawiona – respektuj ją
+                if (not js_domains_wl) or any(dom.endswith(w) for w in js_domains_wl):
+                    if _RENDER_COUNT < max_js:
+                        rendered = _render_and_get_html(link, nav_timeout_ms, wait_until)
+                        _RENDER_COUNT += 1
+                        if rendered:
+                            # po renderze ponów: pattern (na HTML), dostępność, cena
+                            if pat and not pat.search(title):
+                                if not pat.search(rendered):
+                                    # dalej nie pasuje – odpuść
+                                    pass
+                            if require_in_stock and out_words:
+                                low2 = rendered.lower()
+                                if any(w in low2 for w in out_words):
+                                    price = None
+                                else:
+                                    price = _extract_from_jsonld(rendered, rates) or _extract_price_regex(rendered, rates)
+                            else:
+                                price = _extract_from_jsonld(rendered, rates) or _extract_price_regex(rendered, rates)
+
+            # 8) jeśli pattern jednak nie pasuje (po wszystkich próbach) – odrzuć
+            if pat:
+                # sprawdź ostatecznie na statycznym/renderowanym HTML (co mamy pod ręką)
+                basis = html_text
+                if price is None and enable_js:
+                    # jeżeli render był – 'rendered' jest zdefiniowane, ale tylko w gałęzi powyżej
+                    try:
+                        basis = rendered  # noqa
+                    except Exception:
+                        pass
+                if not pat.search(title) and (basis is None or not pat.search(basis or "")):
+                    continue
 
             items.append({
                 "store": "web",
@@ -182,9 +310,9 @@ def search(term: str, timeout: int = 10, ctx: dict | None = None):
                 break
 
         start += 10
-        time.sleep(1.0)  # throttle
+        time.sleep(1.0)
 
-    # Deduplikacja po URL
+    # deduplikacja po URL
     uniq = {}
     for o in items:
         uniq[o["url"]] = o
