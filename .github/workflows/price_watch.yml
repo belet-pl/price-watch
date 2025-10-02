@@ -8,6 +8,8 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,30 +18,57 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
 
       - name: Install deps
-        run: pip install -r requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Install Playwright browsers
         run: |
           python -m playwright install --with-deps chromium
-
 
       - name: Run agent (one-shot)
         env:
           GOOGLE_CSE_KEY: ${{ secrets.GOOGLE_CSE_KEY }}
           GOOGLE_CSE_CX:  ${{ secrets.GOOGLE_CSE_CX }}
           RUN_ONCE: "true"
+          PYTHONUNBUFFERED: "1"
         run: python main.py
 
-      # --- Artefakty: offers.db i found.csv ---
+      # ——— Diagnostyka po uruchomieniu ———
+      - name: List workspace after run
+        if: ${{ always() }}
+        run: ls -la
 
+      - name: Show head of found.csv (if exists)
+        if: ${{ always() }}
+        run: |
+          if [ -f "found.csv" ]; then
+            echo "found.csv present:"
+            head -n 20 found.csv
+          else
+            echo "found.csv NOT found"
+          fi
+
+      - name: Show head of checked_urls.csv (if exists)
+        if: ${{ always() }}
+        run: |
+          if [ -f "checked_urls.csv" ]; then
+            echo "checked_urls.csv present:"
+            head -n 20 checked_urls.csv
+          else
+            echo "checked_urls.csv NOT found"
+          fi
+
+      # ——— Upewnij się, że artefakty istnieją ———
       - name: Ensure offers.db exists
         if: ${{ always() }}
         run: |
           if [ ! -f "offers.db" ]; then
             echo "offers.db not found, creating empty"
-            sqlite3 offers.db 'VACUUM;'
+            sqlite3 offers.db 'VACUUM;' || true
           fi
 
       - name: Ensure found.csv exists
@@ -49,6 +78,14 @@ jobs:
             echo "product,store,title,price_pln,url,found_at" > found.csv
           fi
 
+      - name: Ensure checked_urls.csv exists
+        if: ${{ always() }}
+        run: |
+          if [ ! -f "checked_urls.csv" ]; then
+            echo "ts,query,url,title,domain,passed_domain,passed_url_regex,fetched,matched_pattern,used_js,price_pln,filtered_out_reason" > checked_urls.csv
+          fi
+
+      # ——— Upload artefaktów ———
       - name: Upload offers.db
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -63,8 +100,6 @@ jobs:
           name: found-csv
           path: found.csv
           if-no-files-found: ignore
-
-
 
       - name: Upload checked_urls.csv
         if: ${{ always() }}
