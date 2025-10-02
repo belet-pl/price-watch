@@ -20,6 +20,11 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
+      - name: Install Playwright browsers
+        run: |
+          python -m playwright install --with-deps chromium
+
+
       - name: Run agent (one-shot)
         env:
           GOOGLE_CSE_KEY: ${{ secrets.GOOGLE_CSE_KEY }}
