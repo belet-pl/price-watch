@@ -3,3 +3,4 @@ beautifulsoup4
 python-dateutil
 PyYAML
 APScheduler
+playwright>=1.46.0
