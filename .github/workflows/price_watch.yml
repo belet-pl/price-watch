@@ -62,3 +62,14 @@ jobs:
         with:
           name: found-csv
           path: found.csv
+          if-no-files-found: ignore
+
+
+
+      - name: Upload checked_urls.csv
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: checked-urls
+          path: checked_urls.csv
+          if-no-files-found: ignore
